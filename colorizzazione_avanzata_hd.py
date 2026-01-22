@@ -636,7 +636,6 @@ def colorizzazione_avanzata_hd(
         ax = fig.add_subplot(3, 3, k + 1)
         showimg(ax, results[k], names[k])
     plt.tight_layout()
-    plt.show()
 
     # ===== Salvataggi =====
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

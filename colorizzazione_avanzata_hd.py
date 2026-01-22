@@ -636,6 +636,17 @@ def colorizzazione_avanzata_hd(
         ax = fig.add_subplot(3, 3, k + 1)
         showimg(ax, results[k], names[k])
     plt.tight_layout()
+    output_dict = {
+        "method1": results[0] if len(results) > 0 else bw_gray,
+        "method2": results[1] if len(results) > 1 else bw_gray,
+        "method3": results[2] if len(results) > 2 else bw_gray,
+        "method4": results[3] if len(results) > 3 else bw_gray,
+        "method5": results[4] if len(results) > 4 else bw_gray,
+        "method6": results[5] if len(results) > 5 else bw_gray,
+        "method7": results[6] if len(results) > 6 else bw_gray,
+        "method8": results[7] if len(results) > 7 else bw_gray,
+    }
+    return output_dict
 
     # ===== Salvataggi =====
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

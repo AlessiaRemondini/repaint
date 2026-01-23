@@ -5,13 +5,14 @@ import io
 import base64
 from PIL import Image
 import numpy as np
+import os
 
-# Importiamo le tue funzioni dal tuo file
-from colorizzazione_avanzata_hd import Params, colorizzazione_avanzata_hd, im2double_local
+# Importiamo le funzioni dal tuo file ricolorazione
+from colorizzazione_avanzata_hd import Params, colorizzazione_avanzata_hd
 
 app = FastAPI()
 
-# Permette a Lovable di connettersi
+# Permette a Lovable di connettersi senza blocchi di sicurezza
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,49 +21,55 @@ app.add_middleware(
 )
 
 def image_to_base64(img_array):
-    """Converte un array numpy in stringa base64 per Lovable"""
-    img = Image.fromarray((img_array * 255).astype(np.uint8))
+    """Converte un array numpy ricolorato in stringa base64 leggibile da Lovable"""
+    # Assicuriamoci che l'array sia nel formato corretto (0-255 uint8)
+    img_fixed = (np.clip(img_array, 0, 1) * 255).astype(np.uint8)
+    img = Image.fromarray(img_fixed)
     buffered = io.BytesIO()
     img.save(buffered, format="PNG")
-    return base64.b64encode(buffered.getvalue()).decode('utf-8')
+    return "data:image/png;base64," + base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 @app.post("/repaint")
 async def repaint_endpoint(bw: UploadFile = File(...), ref: UploadFile = File(...)):
-    # 1. Leggi le immagini caricate
-    bw_content = await bw.read()
-    ref_content = await ref.read()
-    
-    # 2. Converti in formato PIL e poi in array per il tuo codice
-    bw_img = Image.open(io.BytesIO(bw_content)).convert('RGB')
-    ref_img = Image.open(io.BytesIO(ref_content)).convert('RGB')
-    
-    # Trasforma in double [0,1] come richiesto dal tuo algoritmo
-    I_bw = np.array(bw_img).astype(np.float64) / 255.0
-    I_ref = np.array(ref_img).astype(np.float64) / 255.0
+    try:
+        # 1. Leggi i file inviati da Lovable
+        bw_content = await bw.read()
+        ref_content = await ref.read()
+        
+        # 2. Converti in array per il tuo algoritmo
+        bw_img = Image.open(io.BytesIO(bw_content)).convert('RGB')
+        ref_img = Image.open(io.BytesIO(ref_content)).convert('RGB')
+        
+        I_bw = np.array(bw_img).astype(np.float64) / 255.0
+        I_ref = np.array(ref_img).astype(np.float64) / 255.0
 
-    # 3. Esegui il tuo algoritmo (qui chiami la tua funzione principale)
-    # Nota: assicurati che la tua funzione restituisca un dizionario o una lista dei risultati
-    params = Params(output_res=(I_bw.shape[0], I_bw.shape[1]))
-    
-    # ESEMPIO: Supponiamo che la tua funzione restituisca una lista di array numpy
-    # risultati = colorizzazione_avanzata_hd(I_bw, I_ref, params) 
-    
-    # Per ora simuliamo la risposta per i box di Lovable:
-    response_data = {
-        "method1": image_to_base64(I_bw), # Sostituisci con il risultato reale
-        "method2": image_to_base64(I_bw), 
-        "method3": image_to_base64(I_bw),
-        "method4": image_to_base64(I_bw),
-        "method5": image_to_base64(I_bw),
-        "method6": image_to_base64(I_bw),
-        "method7": image_to_base64(I_bw),
-        "method8": image_to_base64(I_bw),
-    }
+        # 3. ESECUZIONE REALE DELL'ALGORITMO
+        # Creiamo i parametri (puoi regolare la risoluzione qui se Render è lento)
+        params = Params(output_res=(I_bw.shape[0], I_bw.shape[1]))
+        
+        # Chiamiamo la tua funzione (passando gli array, non i percorsi file)
+        # NOTA: Questa funzione deve restituire il dizionario dei risultati (output_dict)
+        risultati = colorizzazione_avanzata_hd(bw_img=I_bw, ref_img=I_ref, params=params) 
+        
+        # 4. Risposta per Lovable
+        # Mappiamo i tuoi 8 metodi ricolorati
+        response_data = {
+            "method1": image_to_base64(risultati["method1"]),
+            "method2": image_to_base64(risultati["method2"]),
+            "method3": image_to_base64(risultati["method3"]),
+            "method4": image_to_base64(risultati["method4"]),
+            "method5": image_to_base64(risultati["method5"]),
+            "method6": image_to_base64(risultati["method6"]),
+            "method7": image_to_base64(risultati["method7"]),
+            "method8": image_to_base64(risultati["method8"]),
+        }
 
-    return JSONResponse(content=response_data)
+        return JSONResponse(content=response_data)
+
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 if __name__ == "__main__":
-    import uvicorn
-    import os
     port = int(os.environ.get("PORT", 10000))
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=port)

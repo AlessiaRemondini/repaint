@@ -1,75 +1,98 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import io
-import base64
-from PIL import Image
-import numpy as np
+import shutil
 import os
+import cv2
+import numpy as np
+from pathlib import Path
 
-# Importiamo le funzioni dal tuo file ricolorazione
-from colorizzazione_avanzata_hd import Params, colorizzazione_avanzata_hd
+# Importiamo la tua logica di colorizzazione
+# Assicurati che il file si chiami esattamente colorizzazione_avanzata_hd.py
+import colorizzazione_avanzata_hd as colorizer
 
 app = FastAPI()
 
-# Permette a Lovable di connettersi senza blocchi di sicurezza
+# --- CONFIGURAZIONE CORS (IMPORTANTE PER LOVABLE) ---
+origins = [
+    "*",  # "*" significa "accetta tutti". Per produzione sarebbe meglio mettere l'URL specifico di Lovable, ma per test va benissimo così.
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# ----------------------------------------------------
 
-def image_to_base64(img_array):
-    """Converte un array numpy ricolorato in stringa base64 leggibile da Lovable"""
-    # Assicuriamoci che l'array sia nel formato corretto (0-255 uint8)
-    img_fixed = (np.clip(img_array, 0, 1) * 255).astype(np.uint8)
-    img = Image.fromarray(img_fixed)
-    buffered = io.BytesIO()
-    img.save(buffered, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buffered.getvalue()).decode('utf-8')
+UPLOAD_FOLDER = "uploads"
+RESULTS_FOLDER = "results"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(RESULTS_FOLDER, exist_ok=True)
+
+@app.get("/")
+def read_root():
+    return {"message": "API di Colorizzazione Attiva! Vai su /docs per testare."}
 
 @app.post("/repaint")
-async def repaint_endpoint(bw: UploadFile = File(...), ref: UploadFile = File(...)):
+async def repaint_endpoint(
+    bw_image: UploadFile = File(...),
+    ref_image: UploadFile = File(...)
+):
     try:
-        # 1. Leggi i file inviati da Lovable
-        bw_content = await bw.read()
-        ref_content = await ref.read()
+        # 1. Salva i file ricevuti temporaneamente
+        bw_path = f"{UPLOAD_FOLDER}/{bw_image.filename}"
+        ref_path = f"{UPLOAD_FOLDER}/{ref_image.filename}"
         
-        # 2. Converti in array per il tuo algoritmo
-        bw_img = Image.open(io.BytesIO(bw_content)).convert('RGB')
-        ref_img = Image.open(io.BytesIO(ref_content)).convert('RGB')
-        
-        I_bw = np.array(bw_img).astype(np.float64) / 255.0
-        I_ref = np.array(ref_img).astype(np.float64) / 255.0
+        with open(bw_path, "wb") as buffer:
+            shutil.copyfileobj(bw_image.file, buffer)
+        with open(ref_path, "wb") as buffer:
+            shutil.copyfileobj(ref_image.file, buffer)
 
-        # 3. ESECUZIONE REALE DELL'ALGORITMO
-        # Creiamo i parametri (puoi regolare la risoluzione qui se Render è lento)
-        params = Params(output_res=(I_bw.shape[0], I_bw.shape[1]))
-        
-        # Chiamiamo la tua funzione (passando gli array, non i percorsi file)
-        # NOTA: Questa funzione deve restituire il dizionario dei risultati (output_dict)
-        risultati = colorizzazione_avanzata_hd(bw_img=I_bw, ref_img=I_ref, params=params) 
-        
-        # 4. Risposta per Lovable
-        # Mappiamo i tuoi 8 metodi ricolorati
-        response_data = {
-            "method1": image_to_base64(risultati["method1"]),
-            "method2": image_to_base64(risultati["method2"]),
-            "method3": image_to_base64(risultati["method3"]),
-            "method4": image_to_base64(risultati["method4"]),
-            "method5": image_to_base64(risultati["method5"]),
-            "method6": image_to_base64(risultati["method6"]),
-            "method7": image_to_base64(risultati["method7"]),
-            "method8": image_to_base64(risultati["method8"]),
-        }
+        # 2. Carica le immagini con OpenCV
+        img_bw = cv2.imread(bw_path)
+        img_ref = cv2.imread(ref_path)
 
-        return JSONResponse(content=response_data)
+        if img_bw is None or img_ref is None:
+            raise HTTPException(status_code=400, detail="Errore nel caricamento delle immagini. Formato non valido?")
+
+        # Convertiamo BGR (OpenCV) -> RGB (Processing) -> Float [0,1]
+        img_bw = cv2.cvtColor(img_bw, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        img_ref = cv2.cvtColor(img_ref, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+
+        # Gestione B&N: se l'immagine ha 3 canali ma è grigia, ok. Se ne ha 1, convertiamo.
+        if img_bw.ndim == 2:
+            img_bw = np.stack([img_bw]*3, axis=-1)
+
+        # 3. Eseguiamo la colorizzazione
+        # Chiamiamo la funzione principale del tuo script
+        # params=None usa i default definiti nel tuo file
+        output_dict = colorizer.colorizzazione_avanzata_hd(img_bw, img_ref, params=None)
+        
+        # Recuperiamo il risultato migliore (es. 'blend' o 'method5')
+        # Puoi cambiare 'blend' con 'method5' se preferisci il risultato Bilateral
+        result_img = output_dict.get('blend') 
+        
+        if result_img is None:
+             # Fallback se qualcosa va storto
+            result_img = img_bw
+
+        # 4. Salviamo il risultato
+        output_filename = f"colorized_{bw_image.filename}"
+        output_path = f"{RESULTS_FOLDER}/{output_filename}"
+        
+        # Convertiamo da Float [0,1] -> RGB uint8 -> BGR per salvataggio OpenCV
+        result_uint8 = (np.clip(result_img, 0, 1) * 255).astype(np.uint8)
+        result_bgr = cv2.cvtColor(result_uint8, cv2.COLOR_RGB2BGR)
+        
+        cv2.imwrite(output_path, result_bgr)
+
+        # 5. Restituiamo l'immagine processata
+        return FileResponse(output_path, media_type="image/jpeg")
 
     except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=port)
+        # Se c'è un errore, lo stampiamo nei log di Render e lo diciamo al frontend
+        print(f"ERRORE: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

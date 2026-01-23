@@ -1,21 +1,3 @@
-# file: colorizzazione_avanzata_hd.py
-"""
-Colorizzazione avanzata — versione FULL HD (1080p) in Python
-
-Porting fedele del codice MATLAB fornito, con dipendenze minime (NumPy, Pillow, Matplotlib).
-Opzionali: scikit-image per conversioni LAB ed equalizzazione dell'istogramma.
-
-Avvertenze performance:
-- Il joint bilateral naïf è O(H*W*r^2); su 1080p può essere lento. Usare r piccoli o ridurre la risoluzione.
-- Il bilateral grid è vettoriale e molto più rapido.
-
-Esecuzione:
-    python colorizzazione_avanzata_hd.py [--bw path_bw] [--ref path_color] [--mode fit|fill|stretch]
-
-Output:
-- Figure di confronto (matplotlib).
-- File PNG salvati con prefisso "colorized_*_<timestamp>.png".
-"""
 from __future__ import annotations
 import os
 import sys
@@ -23,22 +5,21 @@ import math
 import time
 import argparse
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Tuple, List, Optional
 
 import numpy as np
 
-# Dipendenze opzionali
+# Dipendenze opzionali (gestione errori mantenuta come nel tuo originale)
 try:
     from PIL import Image
-except Exception:  # pragma: no cover
-    Image = None  # type: ignore
+except Exception:
+    Image = None
 
-try:  # Opzionale per LAB/equalize
+try:
     import skimage.color as skc
     import skimage.exposure as ske
     HAS_SKI = True
-except Exception:  # pragma: no cover
+except Exception:
     HAS_SKI = False
 
 import matplotlib.pyplot as plt
@@ -47,7 +28,7 @@ import matplotlib.pyplot as plt
 # ================== PARAMETRI ==================
 @dataclass
 class Params:
-    output_res: Tuple[int, int] = (1700, 1368)  # (H, W) # Changed from 4K to 1368x1700
+    output_res: Tuple[int, int] = (1700, 1368)  # (H, W)
     resize_mode: str = "fit"                    # 'fit' | 'fill' | 'stretch'
     pad_color: Tuple[float, float, float] = (1.0, 1.0, 1.0)
 
@@ -94,7 +75,6 @@ def mat2gray_local(A: np.ndarray) -> np.ndarray:
 
 
 def rgb2gray_fallback(img: np.ndarray) -> np.ndarray:
-    """Luma BT.601; evita dipendenze. Perché: stabilità cross-env."""
     if img.ndim == 3 and img.shape[2] == 3:
         r, g, b = img[..., 0], img[..., 1], img[..., 2]
         gimg = 0.2989360213 * r + 0.5870430745 * g + 0.1140209043 * b
@@ -133,13 +113,13 @@ def _ensure_3c(img: np.ndarray) -> np.ndarray:
 
 
 def resize_img_local(img: np.ndarray, new_hw: Tuple[int, int], method: str = "bicubic") -> np.ndarray:
-    """Usa Pillow se disponibile, altrimenti fallback NumPy bilineare. Perché: qualità e semplicità."""
     h, w = int(new_hw[0]), int(new_hw[1])
     img = im2double_local(img)
 
     if Image is not None:
         pil_mode = "RGB" if (img.ndim == 3 and img.shape[2] == 3) else "L"
-        arr8 = (clip01(img) * 255.0 + 0.5).astype(np.uint8)
+        # Conversione sicura per evitare errori su array float
+        arr8 = (clip01(img) * 255.0).astype(np.uint8) 
         pim = Image.fromarray(arr8.squeeze(), mode=pil_mode)
         resample = {
             "nearest": Image.NEAREST,
@@ -154,7 +134,6 @@ def resize_img_local(img: np.ndarray, new_hw: Tuple[int, int], method: str = "bi
             out = out.reshape(h, w, 3)
         return clip01(out)
 
-    # Fallback bilineare vettoriale (lento per immagini grandi)
     return _bilinear_resize_numpy(img, h, w)
 
 
@@ -220,14 +199,12 @@ def resize_to_canvas_local(img: np.ndarray, outH: int, outW: int, mode: str = "f
 # ================== HSV CONVERSIONI ==================
 
 def rgb2hsv_local(rgb: np.ndarray) -> np.ndarray:
-    """RGB→HSV vettoriale [0,1]."""
     rgb = clip01(rgb)
     r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
     cmax = np.max(rgb, axis=-1)
     cmin = np.min(rgb, axis=-1)
     delta = cmax - cmin + 1e-12
 
-    # Hue
     h = np.zeros_like(cmax)
     mask = delta > 0
     r_is_max = (cmax == r) & mask
@@ -239,9 +216,7 @@ def rgb2hsv_local(rgb: np.ndarray) -> np.ndarray:
     h[b_is_max] = ((r - g)[b_is_max] / delta[b_is_max]) + 4
     h = (h / 6.0) % 1.0
 
-    # Saturation
     s = np.where(cmax == 0, 0.0, delta / (cmax + 1e-12))
-
     v = cmax
     return np.stack([h, s, v], axis=-1)
 
@@ -254,7 +229,6 @@ def hsv2rgb_local(hsv: np.ndarray) -> np.ndarray:
     X = C * (1 - np.abs((H % 2) - 1))
     m = V - C
 
-    zeros = np.zeros_like(H)
     r = np.zeros_like(H)
     g = np.zeros_like(H)
     b = np.zeros_like(H)
@@ -270,34 +244,21 @@ def hsv2rgb_local(hsv: np.ndarray) -> np.ndarray:
 
     r = np.where(conds[0], C, r)
     g = np.where(conds[0], X, g)
-    b = np.where(conds[0], zeros, b)
-
     r = np.where(conds[1], X, r)
     g = np.where(conds[1], C, g)
-    b = np.where(conds[1], zeros, b)
-
-    r = np.where(conds[2], zeros, r)
     g = np.where(conds[2], C, g)
     b = np.where(conds[2], X, b)
-
-    r = np.where(conds[3], zeros, r)
     g = np.where(conds[3], X, g)
     b = np.where(conds[3], C, b)
-
     r = np.where(conds[4], X, r)
-    g = np.where(conds[4], zeros, g)
     b = np.where(conds[4], C, b)
-
     r = np.where(conds[5], C, r)
-    g = np.where(conds[5], zeros, g)
     b = np.where(conds[5], X, b)
 
-    r = r + m
-    g = g + m
-    b = b + m
-
-    rgb = np.stack([r, g, b], axis=-1)
-    return clip01(rgb)
+    r += m
+    g += m
+    b += m
+    return clip01(np.stack([r, g, b], axis=-1))
 
 
 # ================== GAUSS/CONVOLUZIONI ==================
@@ -318,19 +279,15 @@ def _pad_reflect(a: np.ndarray, pad: int, axis: int) -> np.ndarray:
 
 
 def conv1d_along_axis(arr: np.ndarray, kernel: np.ndarray, axis: int) -> np.ndarray:
-    """Convoluzione 1D separabile con padding reflect. Perché: compatibilità senza SciPy."""
     k = kernel.reshape([-1])
     pad = len(k) // 2
     arr_pad = _pad_reflect(arr, pad, axis)
-    # Roll axis to last, convolve, roll back
     arr_t = np.moveaxis(arr_pad, axis, -1)
-    out = np.empty(arr_t.shape[:-1] + (arr.shape[axis],), dtype=np.float64)
-    # vettoriale: usiamo sliding window via stride tricks
+    
     from numpy.lib.stride_tricks import sliding_window_view
     sw = sliding_window_view(arr_t, window_shape=(len(k),), axis=-1)
     out_t = np.tensordot(sw, k, axes=([-1], [0]))
-    out = out_t
-    return np.moveaxis(out, -1, axis)
+    return np.moveaxis(out_t, -1, axis)
 
 
 def gaussian_blur2d(img: np.ndarray, sigma: float = 1.0, ksz: int = 5) -> np.ndarray:
@@ -364,7 +321,6 @@ def bilateral_grid_colorize_local(ref_rgb: np.ndarray, target_L: np.ndarray, par
     S = ref_hsv[..., 1]
     Vref = ref_hsv[..., 2]
 
-    # coordinate normalizzate
     xg, yg = np.meshgrid(np.arange(cols), np.arange(rows))
     xg = (xg + 0.5) / cols
     yg = (yg + 0.5) / rows
@@ -376,7 +332,6 @@ def bilateral_grid_colorize_local(ref_rgb: np.ndarray, target_L: np.ndarray, par
     iy = _to_bins_ceiling(yg, GY)
     iz_ref = _to_bins_ceiling(Vref, GL)
 
-    # accumuli: cos/sin pesati da saturazione
     theta = 2 * np.pi * H
     w = np.maximum(S, 1e-6)
 
@@ -386,7 +341,7 @@ def bilateral_grid_colorize_local(ref_rgb: np.ndarray, target_L: np.ndarray, par
     Wsat = np.zeros(size, dtype=np.float64)
     Wcnt = np.zeros(size, dtype=np.float64)
 
-    lin = (iy * GX + ix) * GL + iz_ref  # 0-based
+    lin = (iy * GX + ix) * GL + iz_ref
     lin = lin.ravel()
 
     np.add.at(Wcos.ravel(), lin, np.cos(theta).ravel() * w.ravel())
@@ -394,7 +349,6 @@ def bilateral_grid_colorize_local(ref_rgb: np.ndarray, target_L: np.ndarray, par
     np.add.at(Wsat.ravel(), lin, S.ravel())
     np.add.at(Wcnt.ravel(), lin, np.ones_like(S).ravel())
 
-    # smoothing separabile 3D
     Wcos = smooth3_separable(Wcos, params.grid_sigma)
     Wsin = smooth3_separable(Wsin, params.grid_sigma)
     Wsat = smooth3_separable(Wsat, params.grid_sigma)
@@ -404,7 +358,6 @@ def bilateral_grid_colorize_local(ref_rgb: np.ndarray, target_L: np.ndarray, par
     H_grid = np.mod(np.arctan2(Wsin, Wcos) / (2 * np.pi), 1.0)
     S_grid = clip01(Wsat / np.maximum(Wcnt, epsc))
 
-    # Sampling dalla luminanza target
     iz_t = _to_bins_ceiling(clip01(target_L), GL)
     ix_t = _to_bins_ceiling((np.arange(cols) + 0.5) / cols, GX)
     iy_t = _to_bins_ceiling((np.arange(rows) + 0.5) / rows, GY)
@@ -427,7 +380,6 @@ def joint_bilateral_color_local(img_rgb: np.ndarray, guide_gray: np.ndarray,
     guide = clip01(guide_gray)
     rows, cols = guide.shape
 
-    # Kernel spaziale precomputato
     X, Y = np.meshgrid(np.arange(-r, r + 1), np.arange(-r, r + 1))
     Gsp = np.exp(-((X ** 2 + Y ** 2) / (2 * sigma_s ** 2)))
 
@@ -443,7 +395,6 @@ def joint_bilateral_color_local(img_rgb: np.ndarray, guide_gray: np.ndarray,
             Gs = Gsp[(y1 - (y - r)):(y2 - (y - r) + 1), (x1 - (x - r)):(x2 - (x - r) + 1)]
             W = Gs * Gr
             Wsum = np.sum(W) + 1e-12
-            # broadcasting sul canale
             out[y, x, :] = np.sum(patchI * W[..., None], axis=(0, 1)) / Wsum
     return clip01(out)
 
@@ -457,112 +408,64 @@ def unsharp_luminance_local(V: np.ndarray, amount: float = 0.6) -> np.ndarray:
     return clip01(V + amount * hp)
 
 
-# ================== VISUALIZZAZIONE ==================
+# ================== PIPELINE PRINCIPALE PER BACKEND ==================
 
-def showimg(ax, img: np.ndarray, ttl: str):
-    ax.imshow(clip01(img))
-    ax.axis('off')
-    ax.set_title(ttl, fontsize=12)
+def colorizzazione_avanzata_hd(bw_img: np.ndarray, ref_img: np.ndarray, params: Params = None) -> dict:
+    """
+    Funzione adattata per backend (FastAPI/Render).
+    Input: Array Numpy [0,1]
+    Output: Dizionario con risultati
+    """
+    if params is None:
+        params = Params()
 
+    # 1. Utilizza direttamente le immagini passate dal server
+    # bw_img e ref_img sono già array normalizzati e caricati da main.py
+    I_bw = bw_img
+    I_ref = ref_img
 
-# ================== IO ==================
+    # 2. Resize e adattamento al canvas (secondo i params)
+    bw_img_res = resize_to_canvas_local(I_bw, params.output_res[0], params.output_res[1], params.resize_mode, params.pad_color)
+    col_img_res = resize_to_canvas_local(I_ref, params.output_res[0], params.output_res[1], params.resize_mode, params.pad_color)
 
-def _imread_any(path: str) -> np.ndarray:
-    if Image is None:
-        raise RuntimeError("Pillow non disponibile: installa pillow oppure fornisci array NumPy.")
-    im = Image.open(path).convert('RGB')
-    arr = np.asarray(im).astype(np.float64) / 255.0
-    return clip01(arr)
-
-
-def _imwrite_png(path: str, arr: np.ndarray) -> None:
-    if Image is None:
-        return
-    arr8 = (clip01(arr) * 255.0 + 0.5).astype(np.uint8)
-    if arr8.ndim == 2:
-        Image.fromarray(arr8, mode='L').save(path)
+    # 3. Conversione B&N (Luma fallback)
+    if bw_img_res.ndim == 3 and bw_img_res.shape[2] == 3:
+        bw_gray = rgb2gray_fallback(bw_img_res)
     else:
-        Image.fromarray(arr8, mode='RGB').save(path)
-
-
-# ================== PIPELINE PRINCIPALE ==================
-
-def colorizzazione_avanzata_hd(
-    bw_path: Optional[str] = None,
-    ref_path: Optional[str] = None,
-    params: Params = Params(),
-) -> None:
-    print("🖼️ Caricamento immagini...")
-    bw_img: Optional[np.ndarray] = None
-    col_img: Optional[np.ndarray] = None
-
-    # Default file se presenti
-    if bw_path is None and ref_path is None:
-        if os.path.exists('cupola.jpg') and os.path.exists('Melozzo.jpg'):
-            bw_path = 'cupola.jpg'
-            ref_path = 'Melozzo.jpg'
-            print('✅ File predefiniti caricati')
-
-    if bw_path is None or ref_path is None:
-        # Prompt minimale CLI
-        if bw_path is None:
-            bw_path = input('Percorso immagine B&N: ').strip()
-        if ref_path is None:
-            ref_path = input('Percorso immagine colori: ').strip()
-
-    if not (bw_path and os.path.exists(bw_path)):
-        raise FileNotFoundError(f"File non trovato: {bw_path}")
-    if not (ref_path and os.path.exists(ref_path)):
-        raise FileNotFoundError(f"File non trovato: {ref_path}")
-
-    bw_img = _imread_any(bw_path)
-    col_img = _imread_any(ref_path)
-
-    # Normalizza e porta a canvas
-    bw_img = im2double_local(bw_img)
-    col_img = im2double_local(col_img)
-
-    bw_img = resize_to_canvas_local(bw_img, params.output_res[0], params.output_res[1], params.resize_mode, params.pad_color)
-    col_img = resize_to_canvas_local(col_img, params.output_res[0], params.output_res[1], params.resize_mode, params.pad_color)
-
-    if bw_img.ndim == 3 and bw_img.shape[2] == 3:
-        bw_gray = rgb2gray_fallback(bw_img)
-    else:
-        bw_gray = bw_img if bw_img.ndim == 2 else bw_img[..., 0]
-
-    if col_img.ndim != 3 or col_img.shape[2] != 3:
-        raise ValueError('La reference deve essere a colori (3 canali).')
+        bw_gray = bw_img_res if bw_img_res.ndim == 2 else bw_img_res[..., 0]
 
     rows, cols = bw_gray.shape
 
-    has_lab = HAS_SKI  # Disponibilità LAB in Python
-    if not has_lab:
-        print('ℹ️ LAB non disponibile: i metodi 1 e 4 verranno saltati.')
-
+    # Contenitori risultati
     results: List[np.ndarray] = []
     names: List[str] = []
 
     # ===== Metodo 1 (opz.) — LAB transfer =====
-    if has_lab:
-        print('🔧 Metodo 1: Transfer colore LAB...')
-        col_lab = skc.rgb2lab(col_img)
-        bw_lab = skc.rgb2lab(np.dstack([bw_gray, bw_gray, bw_gray]))
-        out_lab = bw_lab.copy()
-        out_lab[..., 1] = col_lab[..., 1]
-        out_lab[..., 2] = col_lab[..., 2]
-        result1 = clip01(skc.lab2rgb(out_lab))
-        results.append(result1); names.append('lab_transfer')
+    if HAS_SKI:
+        try:
+            col_lab = skc.rgb2lab(col_img_res)
+            bw_lab = skc.rgb2lab(np.dstack([bw_gray, bw_gray, bw_gray]))
+            out_lab = bw_lab.copy()
+            out_lab[..., 1] = col_lab[..., 1]
+            out_lab[..., 2] = col_lab[..., 2]
+            result1 = clip01(skc.lab2rgb(out_lab))
+            results.append(result1)
+        except:
+            results.append(bw_gray)
+    else:
+        results.append(bw_gray) # Fallback se manca scikit-image
+
+    names.append('lab_transfer')
 
     # ===== Metodo 2 — Zone di luminosità =====
-    print('🔧 Metodo 2: Colorizzazione per zone di luminosità...')
     dark_mask = bw_gray < params.dark_th
     mid_mask = (bw_gray >= params.dark_th) & (bw_gray <= params.bright_th)
     bright_mask = bw_gray > params.bright_th
 
-    fallback_rgb = np.mean(col_img.reshape(-1, 3), axis=0).reshape(1, 1, 3)
-    col_dark = zone_mean_rgb(col_img, dark_mask, fallback_rgb)
-    col_mid = zone_mean_rgb(col_img, mid_mask, fallback_rgb)
-    col_bright = zone_mean_rgb(col_img, bright_mask, fallback_rgb)
+    fallback_rgb = np.mean(col_img_res.reshape(-1, 3), axis=0).reshape(1, 1, 3)
+    col_dark = zone_mean_rgb(col_img_res, dark_mask, fallback_rgb)
+    col_mid = zone_mean_rgb(col_img_res, mid_mask, fallback_rgb)
+    col_bright = zone_mean_rgb(col_img_res, bright_mask, fallback_rgb)
 
     result2 = np.zeros((rows, cols, 3), dtype=np.float64)
     for i in range(3):
@@ -575,8 +478,7 @@ def colorizzazione_avanzata_hd(
     results.append(result2); names.append('luminosity_zones')
 
     # ===== Metodo 3 — HSV mixing semplice =====
-    print('🔧 Metodo 3: Mixing avanzato (HSV semplice)...')
-    col_hsv = rgb2hsv_local(col_img)
+    col_hsv = rgb2hsv_local(col_img_res)
     hue_map = resize_img_local(col_hsv[..., 0], (rows, cols), method='bilinear')
     sat_map = resize_img_local(col_hsv[..., 1], (rows, cols), method='bilinear')
     sat_mod = sat_map * (0.3 + 0.7 * (1.0 - bw_gray))
@@ -586,40 +488,47 @@ def colorizzazione_avanzata_hd(
     results.append(result3); names.append('advanced_mixing')
 
     # ===== Metodo 3B — Bilateral grid + Joint bilateral + Unsharp =====
-    print('🔧 Metodo 3B: Bilateral grid + refine + unsharp...')
-    _, result5 = bilateral_grid_colorize_local(col_img, bw_gray, params)
+    # Nota: Bilateral grid potrebbe essere lento su risoluzioni alte, qui manteniamo la logica
+    _, result5 = bilateral_grid_colorize_local(col_img_res, bw_gray, params)
+    
+    # Joint bilateral (Attenzione: O(r^2), lento se r è grande)
     result5_ref = joint_bilateral_color_local(result5, bw_gray,
                                               params.bilat_r, params.bilat_sigma_s, params.bilat_sigma_r)
+    
     V = rgb2hsv_local(result5_ref)[..., 2]
     Vsh = unsharp_luminance_local(V, params.unsharp_amt)
     hsv_ref = rgb2hsv_local(result5_ref)
     hsv_ref[..., 2] = Vsh
     result5_sharp = hsv2rgb_local(hsv_ref)
     result5_sharp = clip01(result5_sharp)
+    
     results.append(result5_ref);   names.append('bilateral_grid_refined')
     results.append(result5_sharp); names.append('bilateral_grid_sharp')
 
     # ===== Metodo 4 (opz.) — Equalizzazione + LAB =====
-    if has_lab:
-        print('🔧 Metodo 4: Equalizzazione + LAB...')
-        if HAS_SKI:
+    if HAS_SKI:
+        try:
             bw_eq = ske.equalize_hist(clip01(bw_gray))
-        else:
-            bw_eq = mat2gray_local(bw_gray)
-        col_lab = skc.rgb2lab(col_img)
-        bwq_lab = skc.lab2rgb(np.dstack([bw_eq, bw_eq, bw_eq])) # Fix: use lab2rgb here
-        out_lab = bwq_lab.copy() # Fix: use bwq_lab
-        out_lab[..., 1] = col_lab[..., 1]
-        out_lab[..., 2] = col_lab[..., 2]
-        result4 = clip01(skc.lab2rgb(out_lab))
-        results.append(result4); names.append('histogram_eq')
+            col_lab = skc.rgb2lab(col_img_res)
+            bwq_lab = skc.lab2rgb(np.dstack([bw_eq, bw_eq, bw_eq]))
+            out_lab = bwq_lab.copy()
+            out_lab[..., 1] = col_lab[..., 1]
+            out_lab[..., 2] = col_lab[..., 2]
+            result4 = clip01(skc.lab2rgb(out_lab))
+            results.append(result4)
+        except:
+            results.append(bw_gray)
+    else:
+        results.append(bw_gray)
+    names.append('histogram_eq')
 
     # ===== Blend + Enhance =====
-    print('🎛️ Blend + Enhance...')
-    if 'lab_transfer' in names:
-        baseA = results[names.index('lab_transfer')]
-    else:
-        baseA = result3
+    # Usa il risultato del metodo 3 o 1 come base A
+    idx_base = 0 if len(results) > 0 else 0
+    baseA = results[idx_base] # Default
+    if len(results) >= 3:
+         baseA = results[2] # advanced_mixing
+
     baseB = result5_sharp
     result_blend = blend_images(baseA, baseB, params.alpha_blend)
     results.append(result_blend); names.append('blend')
@@ -627,92 +536,29 @@ def colorizzazione_avanzata_hd(
     result_enhanced = gamma_adjust(baseB, params.gamma)
     results.append(result_enhanced); names.append('enhanced')
 
-    # ===== Visualizzazione =====
-    print('📺 Visualizzazione...')
-    tiles = min(9, len(results))
-    fig = plt.figure(figsize=(14, 8.5))
-    fig.canvas.manager.set_window_title('CONFRONTO COLORIZZAZIONE (1368x1700)') if hasattr(fig.canvas.manager, 'set_window_title') else None # Changed title
-    for k in range(tiles):
-        ax = fig.add_subplot(3, 3, k + 1)
-        showimg(ax, results[k], names[k])
-    plt.tight_layout()
+    # ===== OUTPUT FINALE PER MAIN.PY =====
+    # Creiamo il dizionario che serve al server
+    # Riempiamo con fallback se alcuni metodi sono falliti
+    def get_res(idx):
+        return results[idx] if len(results) > idx else bw_gray
+
     output_dict = {
-        "method1": results[0] if len(results) > 0 else bw_gray,
-        "method2": results[1] if len(results) > 1 else bw_gray,
-        "method3": results[2] if len(results) > 2 else bw_gray,
-        "method4": results[3] if len(results) > 3 else bw_gray,
-        "method5": results[4] if len(results) > 4 else bw_gray,
-        "method6": results[5] if len(results) > 5 else bw_gray,
-        "method7": results[6] if len(results) > 6 else bw_gray,
-        "method8": results[7] if len(results) > 7 else bw_gray,
+        "method1": get_res(0), # Lab Transfer
+        "method2": get_res(1), # Luminosity Zones
+        "method3": get_res(2), # Advanced Mixing
+        "method4": get_res(3), # Bilateral Refined
+        "method5": get_res(4), # Bilateral Sharp
+        "method6": get_res(5), # Histogram EQ
+        "method7": get_res(6), # Blend
+        "method8": get_res(7), # Enhanced
     }
+    
     return output_dict
 
-    # ===== Salvataggi =====
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    for i, (img, name) in enumerate(zip(results, names)):
-        filename = f'colorized_{name}_{timestamp}.png'
-        try:
-            _imwrite_png(filename, clip01(img))
-            print(f'💾 Salvato: {filename}')
-        except Exception as e:  # pragma: no cover
-            print(f'❌ Errore salvando {filename}: {e}')
 
-    # ===== Metriche =====
-    print('📊 Analisi qualità risultati...')
-    for i, (img, name) in enumerate(zip(results, names), start=1):
-        img1 = clip01(img)
-        color_var = float(np.var(img1))
-        gray_res = rgb2gray_fallback(img1)
-        contrast = float(np.std(gray_res))
-        print(f"{i:2d}) {name:24s} | Var={color_var:.4f}  Contr={contrast:.4f}")
-
-    print('🎉 COMPLETATO — Uscite a 1368x1700 pronte.') # Changed output message
-
-
-# ================== CLI ==================
-
-def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description='Colorizzazione avanzata — FULL HD (Python)') # Keep description as is
-    p.add_argument('--bw', dest='bw', type=str, default=None, help='Immagine B&N (o RGB)')
-    p.add_argument('--ref', dest='ref', type=str, default=None, help='Immagine colore reference')
-    p.add_argument('--mode', dest='mode', type=str, default='fit', choices=['fit', 'fill', 'stretch'], help='Modalità resize')
-    p.add_argument('--outH', dest='outH', type=int, default=1700, help='Output height') # Changed default to 1700
-    p.add_argument('--outW', dest='outW', type=int, default=1368, help='Output width') # Changed default to 1368
-    p.add_argument('--pad', dest='pad', type=float, nargs=3, default=(1.0, 1.0, 1.0), help='Colore padding RGB [0..1]')
-    p.add_argument('--fast-r', dest='r', type=int, default=None, help='Override r per joint bilateral (opz.)')
-    return p.parse_args()
-
-
-def main():
-    # Check if running in an interactive environment like Colab
-    if 'ipykernel' in sys.modules:
-        # If running in Colab/Jupyter, don't parse sys.argv directly
-        # This avoids issues with arguments passed by the kernel
-        args = argparse.Namespace(
-            bw=None,
-            ref=None,
-            mode='fit',
-            outH=1700, # Changed default to 1700
-            outW=1368, # Changed default to 1368
-            pad=(1.0, 1.0, 1.0),
-            r=None,
-        )
-        # You can manually set default values here or add logic to prompt the user
-        # For now, using defaults and letting the function prompt for file paths
-    else:
-        # If running as a standard script, parse command-line arguments
-        args = _parse_args()
-
-    params = Params(
-        output_res=(args.outH, args.outW),
-        resize_mode=args.mode,
-        pad_color=tuple(args.pad),
-    )
-    if args.r is not None:
-        params.bilat_r = int(args.r)
-    colorizzazione_avanzata_hd(args.bw, args.ref, params)
-
-
+# ================== CLI (Per test locali) ==================
+# Questo blocco if __name__ == "__main__" assicura che il server ignori questa parte
 if __name__ == '__main__':
-    main()
+    # Esempio fittizio se esegui lo script da solo
+    print("Questo script è ora configurato come modulo per il backend.")
+    print("Per testarlo, usa main.py.")

@@ -9,7 +9,6 @@ from typing import Tuple, List, Optional
 
 import numpy as np
 
-# Dipendenze opzionali (gestione errori mantenuta come nel tuo originale)
 try:
     from PIL import Image
 except Exception:
@@ -408,7 +407,6 @@ def unsharp_luminance_local(V: np.ndarray, amount: float = 0.6) -> np.ndarray:
     return clip01(V + amount * hp)
 
 
-# ================== PIPELINE PRINCIPALE PER BACKEND ==================
 
 def colorizzazione_avanzata_hd(bw_img: np.ndarray, ref_img: np.ndarray, params: Params = None) -> dict:
     """
